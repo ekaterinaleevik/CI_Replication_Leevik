@@ -1,0 +1,226 @@
+---
+title: "Applied Causal Inference Final Paper: Code for Replication and Conduction of the Analysis"
+author: "Ekaterina Leevik"
+date: "2025-01-31"
+output: html_document
+---
+
+```{r setup, include=FALSE, warning=FALSE}
+# The first line sets an option for the final document that can be produced from
+# the .Rmd file. Don't worry about it.
+knitr::opts_chunk$set(echo = TRUE)
+
+# The next bit (lines 22-43) is quite powerful and useful. 
+# First you define which packages you need for your analysis and assign it to 
+# the p_needed object. 
+p_needed <-
+  c("viridis", "knitr", "sandwich", "kableExtra", "tidyverse", "nnet", "countrycode",
+    "miceadds", "broom", "lmtest", "clarify", "fastDummies", "scales", "ggpubr", "gridExtra", "stargazer", 'haven', 'dplyr', 'tidyr', 'ivpack')
+
+# Now you check which packages are already installed on your computer.
+# The function installed.packages() returns a vector with all the installed 
+# packages.
+packages <- rownames(installed.packages())
+# Then you check which of the packages you need are not installed on your 
+# computer yet. Essentially you compare the vector p_needed with the vector
+# packages. The result of this comparison is assigned to p_to_install.
+p_to_install <- p_needed[!(p_needed %in% packages)]
+# If at least one element is in p_to_install you then install those missing
+# packages.
+if (length(p_to_install) > 0) {
+  install.packages(p_to_install)
+}
+# Now that all packages are installed on the computer, you can load them for
+# this project. Additionally the expression returns whether the packages were
+# successfully loaded.
+sapply(p_needed, require, character.only = TRUE)
+
+
+#Stargazer tables are knitted for latex and html formats
+stargazer_opt <- ifelse(knitr::is_latex_output(), "latex", "html")
+
+if (stargazer_opt == "html"){
+  fargs <- formals(stargazer)
+  fargs$notes.append = FALSE
+  fargs$notes = c("<sup>&sstarf;</sup>p<0.1; <sup>&sstarf;&sstarf;</sup>p<0.05; <sup>&sstarf;&sstarf;&sstarf;</sup>p<0.01")
+  formals(stargazer) <- fargs
+}
+
+
+#seed for the model
+seed = 2023
+```
+
+### Note: In the term paper, I manually correct standard errors by clustering them by country. While I use the coeftest function for this, the stargazer package does not allow me to include these corrected values in the table automatically. As a result, the levels of significance appear different, but you can verify them by running the command included in the code.
+
+```{r downloading data, message=FALSE, warning=FALSE, include=FALSE}
+#eb_data <- read_dta('Micro original output.dta')
+eb_data <-read.csv(gzfile("EB_data.csv.gz"))
+
+
+
+#exploring countries
+countries_unique <- eb_data %>% 
+  distinct(country)
+
+#exploring years when we have info on life satisf + voting intentions
+years_distr_cb <- eb_data %>% 
+  filter(!is.na(vote_cab)) %>% 
+  distinct(year) %>% 
+  arrange(year)
+
+country_distr_cb <- eb_data %>% 
+  filter(!is.na(vote_cab)) %>% 
+  distinct(year, country) %>% 
+  count(n = country) #%>% 
+ # arrange(year)
+  
+#excluding AUT FIN and SWE since they're included in 4 years only
+#eb_data_clean <- eb_data %>% 
+ # filter(!str_detect(country, 'AUT|FIN|SWE')) %>% 
+ # distinct(country)
+
+  
+```
+
+```{r replication, message=FALSE, warning=FALSE, include=FALSE}
+#only 'likely voters'
+repl_data <- eb_data %>% 
+  filter(vote_wouldntvote == 0)
+
+#simple model without covariates
+m_rep_main_no_cov <- lm(vote_cab~ satis2+ satis3+satis4,data=repl_data )
+#summary(m_rep_main_no_cov)  
+#adjusting SEs by clustering at country-level
+coeftest(m_rep_main_no_cov, vcov. = vcovCL(m_rep_main_no_cov, cluster = ~country))
+
+#model with all covariates included in Ward's models
+m_rep_cov <- lm(vote_cab~ satislfe + female + age + age_sq+ educ_16to19 + educ_20plus + educ_stillstudying + educ_missing+ mar4_married +mar4_divsep+ mar4_widowed+ mar4_missing  + parties_ingov + seatshare_cabinet+ ENEP_tmin1+ cab_ideol_sd +as.factor(country) + as.factor(eb),
+                data=repl_data )
+#adjusting SEs by clustering at country-level
+coeftest(m_rep_cov, vcov. = vcovCL(m_rep_cov, cluster = ~country))
+
+```
+
+
+```{r downloading weather data, message=FALSE, warning=FALSE, include=FALSE}
+temp_data <- read.csv('temp_data_full.csv')
+
+#taking only relevant columns
+temp_data <- temp_data[,c(1,2,4)]
+#unitting datasets
+
+#uniting datasets
+df <- repl_data %>% 
+  left_join(temp_data, by= c('country', 'year')) #%>% 
+  #filter(complete.cases(.)) 
+
+#creating quadratic term
+df_clean <- df %>% 
+  mutate(quadr_term = mean_temp_c**2)  
+
+```
+
+
+```{r model, strong instruments, message=FALSE, warning=FALSE, include=FALSE}
+#checking the strengths of the instruments
+
+#for quadratic temperature
+first_stage_satis_quadr <- lm(satislfe ~ quadr_term + female + age + age_sq+ educ_16to19 + educ_20plus + educ_stillstudying + educ_missing+ mar4_married +mar4_divsep+ mar4_widowed+ mar4_missing  + parties_ingov + + seatshare_cabinet+ ENEP_tmin1+ cab_ideol_sd +as.factor(country) + as.factor(eb), data = df_clean)
+
+#adjusting SEs by clustering at country-level
+coeftest(first_stage_satis_quadr, vcov. = vcovCL(first_stage_satis_quadr, cluster = ~country))
+#summary(first_stage_satis_quadr)
+
+#for average temperature
+first_stage_satis_avg <- lm(satislfe ~ mean_temp_c + female + age + age_sq+ educ_16to19 + educ_20plus + educ_stillstudying + educ_missing+ mar4_married +mar4_divsep+ mar4_widowed+ mar4_missing  + parties_ingov + + seatshare_cabinet+ ENEP_tmin1+ cab_ideol_sd +as.factor(country) + as.factor(eb), data = df_clean)
+
+#adjusting SEs by clustering at country-level
+coeftest(first_stage_satis_avg, vcov. = vcovCL(first_stage_satis_avg, cluster = ~country))
+#summary(first_stage_satis_avg)
+```
+
+```{r strong instr, summary, echo= FALSE, message=FALSE, warning=FALSE, results="asis"}
+stargazer(list(first_stage_satis_avg,first_stage_satis_quadr),
+  type = stargazer_opt,
+  out = "m1.tex",
+  dep.var.labels = c("Life Satisfaction"),
+ # column.labels = c("Main", "Alternative"),
+  title = "Regression Results",
+  intercept.top = F,
+  header = FALSE # citation part is invisible
+)
+```
+
+```{r models, message=FALSE, warning=FALSE, include=FALSE}
+#simple model
+mod2sls_no_cov <- ivreg(vote_cab ~ satislfe| quadr_term, data=df_clean) 
+summary(mod2sls_no_cov)
+
+#model with quadratic temp
+mod2sls_cov_quadr <- ivreg(vote_cab ~ satislfe+ female + age + age_sq+ educ_16to19 + educ_20plus + educ_stillstudying + mar4_married +mar4_divsep+ mar4_widowed  + parties_ingov + + seatshare_cabinet+ ENEP_tmin1+ cab_ideol_sd +as.factor(country) + as.factor(eb)| quadr_term + female + age + age_sq+ educ_16to19 + educ_20plus + educ_stillstudying + mar4_married +mar4_divsep+ mar4_widowed  + parties_ingov  + seatshare_cabinet+ ENEP_tmin1+ cab_ideol_sd +as.factor(country) + as.factor(eb), data=df_clean) 
+coeftest(mod2sls_cov_quadr, vcov. = vcovCL(mod2sls_cov_quadr, cluster = ~country))
+
+summary(mod2sls_cov_quadr)
+
+#model with average temp
+mod2sls_cov_avg<- ivreg(vote_cab ~ satislfe+ female + age + age_sq+ educ_16to19 + educ_20plus + educ_stillstudying + mar4_married +mar4_divsep+ mar4_widowed  + parties_ingov + + seatshare_cabinet+ ENEP_tmin1+ cab_ideol_sd +as.factor(country) + as.factor(eb)| mean_temp_c + female + age + age_sq+ educ_16to19 + educ_20plus + educ_stillstudying + mar4_married +mar4_divsep+ mar4_widowed  + parties_ingov  + seatshare_cabinet+ ENEP_tmin1+ cab_ideol_sd +as.factor(country) + as.factor(eb), data=df_clean) 
+
+coeftest(mod2sls_cov_avg, vcov. = vcovCL(mod2sls_cov_avg, cluster = ~country))
+
+```
+
+
+```{r model summaries, echo= FALSE, message=FALSE, warning=FALSE, results="asis"}
+stargazer(list(m_rep_cov,mod2sls_cov_avg,mod2sls_cov_quadr),
+  type = stargazer_opt,
+  out = "models.tex",
+  dep.var.labels = c("Incentive to Vote for Government Party"),
+  column.labels = c("OLS", "IV: Average Temperature", "IV: Quadratic Temperature"),
+  title = "Regression Results for the Main and Alternative Models",
+  intercept.top = F,
+  header = FALSE # citation part is invisible
+)
+```
+
+
+```{r descript stat, message=FALSE, warning=FALSE, include=FALSE}
+
+df_stats <- df %>% 
+  mutate(educ = case_when(
+    educ_0to15 == 1 ~ 1,
+    educ_16to19  == 1 ~ 2,
+    educ_20plus == 1 ~3,
+    educ_stillstudying == 1 ~4,
+    educ_missing == 1 ~ 0, 
+    TRUE ~ NA
+  )) %>% 
+  mutate(marr = case_when(
+    mar4_single == 1 ~ 1,
+    mar4_married  == 1 ~ 2,
+    mar4_divsep == 1 ~3,
+    mar4_widowed == 1 ~4,
+    mar4_missing == 1 ~ 0, 
+    TRUE ~ NA
+  ))
+
+
+df_stats1 <- df_stats %>% 
+  select(country,year,satislfe,vote_cab,mean_temp_c,seatshare_cabinet, cab_ideol_sd, parties_ingov,  ENEP_tmin1 ,age,
+         female, educ,
+         marr)
+
+
+```
+
+```{r overall descriptive table, echo= F, message=FALSE, warning=FALSE, results="asis"}
+# create a table for the clean data set
+stargazer(as.data.frame(df_stats1),
+  out = "stargazer_summary.tex",
+  type = stargazer_opt,
+  digits = 2,
+  title = "Descriptive statistics",
+  header = FALSE
+)
+```
+
